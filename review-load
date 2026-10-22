@@ -113,7 +113,6 @@ fi
 
 first=1
 while IFS=$'\t' read -r c l; do
-    [[ $c -gt 0 || $ME -eq 1 ]] || continue
     [[ $first -eq 1 ]] || echo
     first=0
     jq -r --arg l "$l" '
