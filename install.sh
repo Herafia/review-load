@@ -32,4 +32,4 @@ case ":$PATH:" in
     *) echo "⚠️  $BIN_DIR n'est pas dans ton PATH. Ajoute à ton ~/.bashrc ou ~/.zshrc :"
        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
-echo "👉 Essaie : review-load -d"
+echo "👉 Try this: review-load -m"
