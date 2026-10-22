@@ -10,9 +10,9 @@ pseudo2                2
 pseudo3                1
 
 $ review-load -m
-pseudo3 — 1 pending review(s)
-  pluginsGLPI/example#42  Fix something important  (@pseudo1, 2026-10-01)
-    https://github.com/pluginsGLPI/example/pull/42
+pseudo3 — 2 pending review(s)
+👀 pluginsGLPI/example#42  Fix something important                        @pseudo1  9d    💬 pseudo2  ⏳ pseudo4  CI ✅
+✅ pluginsGLPI/example#46  Add an option                                  @pseudo2  1d    ✅ pseudo1  CI ✅
 
 $ review-load -p
 My open PRs — 3
@@ -60,6 +60,12 @@ Any other organization can be passed by its full name (e.g. `-o teclib`).
 - **direct review requests that are still pending**: as soon as the person submits
   their review, the PR no longer counts for them.
 
+## Reviews to do (`-m`, `-d`)
+
+`review-load -m` lists the PRs awaiting your review, one line per PR, the longest waiting
+first: author, days without activity, what the other reviewers already did, CI and conflicts.
+`review-load -d` shows the same lines for every member of your team list.
+
 ## Status of my PRs (`-p`)
 
 `review-load -p` lists your own open PRs (drafts included), one line per PR, grouped by status:
@@ -76,8 +82,11 @@ who commented, whose review is still pending, the CI status and merge conflicts.
 Your own reviews are ignored. A reviewer who requested changes and was asked again for
 a review is shown as pending with `↻`: the PR is waiting on them, not on you.
 
-The PR number is a clickable link in terminals that support it (GNOME Terminal, Konsole,
-iTerm2, VS Code…). Same scope as the other modes (`-o`, `-r`, plugins by default).
+In every list, the PR number is a clickable link in terminals that support it (GNOME Terminal,
+Konsole, iTerm2, VS Code…). Same scope as the other modes (`-o`, `-r`, plugins by default).
+
+GitHub search sometimes silently returns incomplete results: `-m`, `-d` and `-p` run it twice
+and merge the results, and warn you if PRs are still missing.
 
 ## Your team
 

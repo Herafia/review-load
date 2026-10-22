@@ -109,9 +109,7 @@ check_update() {
 }
 trap check_update EXIT
 
-if [[ $ME -eq 1 ]]; then
-    MEMBERS=("$(gh api user --jq .login)")
-else
+if [[ $ME -eq 0 && $MINE -eq 0 ]]; then
     [[ -f "$TEAM_FILE" ]] || { echo "Team file not found: $TEAM_FILE (one GitHub login per line)" >&2; exit 1; }
     mapfile -t MEMBERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -v '^$')
     [[ ${#MEMBERS[@]} -gt 0 ]] || { echo "No member in $TEAM_FILE: add one GitHub login per line." >&2; exit 1; }
@@ -125,50 +123,75 @@ if [[ ${#SCOPE[@]} -eq 0 ]]; then
 fi
 BASE+=" ${SCOPE[*]}"
 
-if [[ $MINE -eq 1 ]]; then
-    TTY=false
-    [[ -t 1 ]] && TTY=true
-    # Drafts included: we want to see all our open PRs
-    gh api graphql \
-        -f q="is:pr is:open archived:false author:$(gh api user --jq .login) ${SCOPE[*]} sort:created-asc" \
-        -f query='
-        query($q: String!) {
-          search(query: $q, type: ISSUE, first: 100) {
-            issueCount
-            nodes {
-              ... on PullRequest {
-                number title url isDraft mergeable mergeStateStatus reviewDecision updatedAt
-                author { login }
-                repository { nameWithOwner viewerPermission }
-                reviewRequests(first: 20) {
-                  nodes { requestedReviewer { __typename ... on User { login } } }
-                }
-                latestOpinionatedReviews(first: 30) { nodes { state author { login } } }
-                latestReviews(first: 30) { nodes { state author { login } } }
-                commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+TTY=false
+[[ -t 1 ]] && TTY=true
+
+# GitHub search sometimes times out internally and silently returns only part of the results:
+# search for the PR ids only (cheap), two or three times, and merge the attempts
+search_ids() {
+    local q="$1" ids='[]' count=0 attempt json
+    for attempt in 1 2 3; do
+        json=$(gh api graphql -f q="$q" -f query='
+            query($q: String!) {
+              search(query: $q, type: ISSUE, first: 100) { issueCount nodes { ... on PullRequest { id } } }
+            }')
+        count=$(jq --argjson c "$count" '[.data.search.issueCount, $c] | max' <<<"$json")
+        ids=$(jq -c --argjson ids "$ids" '$ids + [.data.search.nodes[].id] | unique' <<<"$json")
+        # the total count can be wrong too: always merge at least two attempts
+        [[ $attempt -ge 2 && $(jq length <<<"$ids") -ge $count ]] && break
+    done
+    [[ $(jq length <<<"$ids") -ge $count ]] || echo "⚠️  GitHub search returned incomplete results, some PRs may be missing: run again." >&2
+    echo "$ids"
+}
+
+LEGEND="🔁 changes requested  🚀 ready to merge  ✅ approved  👀 waiting for review  ❔ no reviewer  📝 draft
+💬 commented  ⏳ pending  ↻ re-requested after requesting changes  Nd = days without activity"
+
+# One line per PR: PRs of $3 (mode "mine"), or PRs awaiting the review of $3 (mode "review"
+# for me, "team" for someone else)
+pr_lines() {
+    local mode="$1" who="$3" ids
+    ids=$(search_ids "$2")
+    # Details fetched by id, outside the search: reliable
+    jq -n --argjson ids "$ids" --arg query '
+        query($ids: [ID!]!) {
+          nodes(ids: $ids) {
+            ... on PullRequest {
+              number title url isDraft mergeable mergeStateStatus reviewDecision updatedAt
+              author { login }
+              repository { nameWithOwner viewerPermission }
+              reviewRequests(first: 20) {
+                nodes { requestedReviewer { __typename ... on User { login } } }
               }
+              latestOpinionatedReviews(first: 30) { nodes { state author { login } } }
+              latestReviews(first: 30) { nodes { state author { login } } }
+              commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
             }
           }
-        }' | jq -r --argjson tty "$TTY" '
+        }' '{query: $query, variables: {ids: $ids}}' \
+    | gh api graphql --input - \
+    | jq -r --argjson tty "$TTY" --arg mode "$mode" --arg me "$who" '
         # Reviewer states, ignoring the reviews of the PR author:
         # - decisive state = latest APPROVED / CHANGES_REQUESTED review (a later comment keeps it)
         # - a reviewer currently requested again counts as pending, not on their old review
         def reviewers:
-            .author.login as $me
+            .author.login as $author
             # a team name would need the read:org scope, so teams are shown generically
             | [.reviewRequests.nodes[].requestedReviewer | .login // "a team"] as $pending
-            | [.latestOpinionatedReviews.nodes[] | select(.author.login != $me)] as $op
+            | [.latestOpinionatedReviews.nodes[] | select(.author.login != $author)] as $op
             | {
                 pending: $pending,
                 rerequested: [$op[] | select(.state == "CHANGES_REQUESTED") | .author.login | select(IN($pending[]))],
                 approved: [$op[] | select(.state == "APPROVED") | .author.login | select(IN($pending[]) | not)],
                 changes: [$op[] | select(.state == "CHANGES_REQUESTED") | .author.login | select(IN($pending[]) | not)],
                 commented: [.latestReviews.nodes[] | select(.state == "COMMENTED") | .author.login
-                            | select(. != $me and (IN($op[].author.login) | not) and (IN($pending[]) | not))]
+                            | select(. != $author and (IN($op[].author.login) | not) and (IN($pending[]) | not))]
               };
         # Same rule as the GitHub merge button: merge permission and a clean merge state
+        # (only meaningful for the viewer: not shown in the team view)
         def ready:
-            (.isDraft | not)
+            $mode != "team"
+            and (.isDraft | not)
             and (.repository.viewerPermission | IN("WRITE", "MAINTAIN", "ADMIN"))
             and ((.mergeStateStatus | IN("CLEAN", "HAS_HOOKS"))
                  or (.mergeStateStatus == "BEHIND" and (.reviewDecision | IN("APPROVED", null))));
@@ -181,7 +204,7 @@ if [[ $MINE -eq 1 ]]; then
             elif (.rv.approved | length > 0) or .reviewDecision == "APPROVED" then [2, "✅"]
             elif (.rv.pending | length > 0) then [3, "👀"]
             else [4, "❔"] end;
-        def idle: ((now - (.updatedAt | fromdateiso8601)) / 86400 | floor | tostring) + "d";
+        def days: (now - (.updatedAt | fromdateiso8601)) / 86400 | floor;
         def ci:
             {"SUCCESS": "CI ✅", "FAILURE": "CI ❌", "ERROR": "CI ❌", "PENDING": "CI ⏳", "EXPECTED": "CI ⏳"}[.commits.nodes[0].commit.statusCheckRollup.state // ""];
         def part($t; $l): if ($l | length) > 0 then "\($t) \($l | join(","))" else empty end;
@@ -191,26 +214,42 @@ if [[ $MINE -eq 1 ]]; then
         # clickable link in terminals that support OSC 8, plain text otherwise
         def link($url): if $tty then "\u001b]8;;\($url)\u001b\\\(.)\u001b]8;;\u001b\\" else . end;
 
-        if .data.search == null then
+        if .data.nodes == null then
             "Error: \(.errors[0].message // "unexpected GitHub response")\n" | halt_error(1)
         else . end
-        | .data.search as $s
-        | ($s.nodes | map(. + {rv: reviewers, ref: "\(.repository.nameWithOwner)#\(.number)"} | . + {st: status})) as $prs
+        | {issueCount: (.data.nodes | length), nodes: .data.nodes} as $s
+        | ($s.nodes | map(. + {rv: reviewers, ref: "\(.repository.nameWithOwner)#\(.number)", by: "@\(.author.login)"} | . + {st: status})) as $prs
         | ([$prs[].ref | length] | max // 0) as $w
-        | "My open PRs — \($s.issueCount)",
-          ($prs | sort_by(.st[0]) | .[]
+        | ([$prs[].by | length] | max // 0) as $wa
+        | (if $mode == "mine" then "My open PRs — \($s.issueCount)" else "\($me) — \($s.issueCount) pending review(s)" end),
+          ($prs
+            # my PRs: grouped by status; reviews to do: the longest waiting first
+            | (if $mode == "mine" then sort_by(.st[0]) else sort_by(.updatedAt) end) | .[]
             | .url as $u
             | .rv.rerequested as $rr
-            | "\(.st[1]) \(.ref | link($u))\(sp($w - (.ref | length) + 2))\(.title | cut(45) | pad(45))  \(idle | pad(4))  "
+            | "\(.st[1]) \(.ref | link($u))\(sp($w - (.ref | length) + 2))\(.title | cut(45) | pad(45))  "
+              + (if $mode != "mine" then (.by | pad($wa)) + "  " else "" end)
+              + ("\(days)d" | pad(4)) + "  "
               + ([ part("✅"; .rv.approved),
                    part("🔁"; .rv.changes),
                    part("💬"; .rv.commented),
-                   part("⏳"; [.rv.pending[] | if IN($rr[]) then . + "↻" else . end]),
+                   # in my review list, I am obviously pending: only show the others
+                   part("⏳"; [.rv.pending[] | select($mode == "mine" or . != $me) | if IN($rr[]) then . + "↻" else . end]),
                    (ci // empty),
                    (if .mergeable == "CONFLICTING" then "⚠️ conflicts" else empty end)
-                 ] | join("  "))),
-          (if ($prs | length) > 0 then "\n🔁 changes requested  🚀 ready to merge  ✅ approved  👀 waiting for review  ❔ no reviewer  📝 draft\n💬 commented  ⏳ pending  ↻ re-requested after requesting changes  Nd = days without activity" else empty end)
+                 ] | join("  ")))
         '
+}
+
+if [[ $MINE -eq 1 || $ME -eq 1 ]]; then
+    VIEWER=$(gh api user --jq .login)
+    if [[ $MINE -eq 1 ]]; then
+        # Drafts included: we want to see all our open PRs
+        pr_lines mine "is:pr is:open archived:false author:$VIEWER ${SCOPE[*]}" "$VIEWER"
+    else
+        pr_lines review "$BASE user-review-requested:$VIEWER" "$VIEWER"
+    fi
+    printf '\n%s\n' "$LEGEND"
     exit 0
 fi
 
@@ -231,15 +270,12 @@ if [[ $DETAILS -eq 0 ]]; then
     exit 0
 fi
 
+# Same lines as -m, for every team member
 first=1
 while IFS=$'\t' read -r c l; do
     [[ $first -eq 1 ]] || echo
     first=0
-    jq -r --arg l "$l" '
-        "\($l) — \(.total_count) pending review(s)",
-        (.items[] |
-            "  \(.repository_url | sub(".*/repos/"; ""))#\(.number)  \(.title)  (@\(.user.login), \(.created_at[0:10]))",
-            "    \(.html_url)")
-    ' <<<"${JSON[$l]}"
+    pr_lines team "$BASE user-review-requested:$l" "$l"
 done <<<"$SORTED"
+printf '\n%s\n' "$LEGEND"
 exit 0
