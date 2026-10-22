@@ -138,7 +138,7 @@ if [[ $MINE -eq 1 ]]; then
                 number title url isDraft mergeable reviewDecision
                 repository { nameWithOwner }
                 reviewRequests(first: 20) {
-                  nodes { requestedReviewer { ... on User { login } ... on Team { name } } }
+                  nodes { requestedReviewer { __typename ... on User { login } } }
                 }
                 latestReviews(first: 20) { nodes { state author { login } } }
                 commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
@@ -157,7 +157,10 @@ if [[ $MINE -eq 1 ]]; then
             {"SUCCESS": "CI ✅", "FAILURE": "CI ❌", "ERROR": "CI ❌", "PENDING": "CI ⏳", "EXPECTED": "CI ⏳"}[.commits.nodes[0].commit.statusCheckRollup.state // ""];
         def part($t; $l): if ($l | length) > 0 then "\($t) \($l | join(", "))" else empty end;
 
-        .data.search as $s
+        if .data.search == null then
+            "Error: \(.errors[0].message // "unexpected GitHub response")\n" | halt_error(1)
+        else . end
+        | .data.search as $s
         | "My open PRs — \($s.issueCount)",
           ($s.nodes | map(. + {st: status}) | sort_by(.st[0]) | .[]
             | "",
@@ -166,7 +169,8 @@ if [[ $MINE -eq 1 ]]; then
               ([ part("✅ approved:"; by("APPROVED")),
                  part("🔁 changes:"; by("CHANGES_REQUESTED")),
                  part("💬 commented:"; by("COMMENTED")),
-                 part("⏳ pending:"; [.reviewRequests.nodes[].requestedReviewer | .login // ("@" + .name)]),
+                 # a team name would need the read:org scope, so teams are shown generically
+                 part("⏳ pending:"; [.reviewRequests.nodes[].requestedReviewer | .login // "a team"]),
                  (ci // empty),
                  (if .mergeable == "CONFLICTING" then "⚠️ conflicts" else empty end)
                ] | select(length > 0) | "    " + join("  ·  ")))
