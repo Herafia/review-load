@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# review-load — Qui a combien de reviews en attente sur des PR ouvertes ?
+# review-load — Who has how many pending reviews on open PRs?
 #
-# Usage : review-load [-m | -d] [-o org]... [-r owner/repo]... [-t team.txt] [--drafts]
-#         review-load -a LOGIN...
-#   (rien)       nombre de reviews en attente par personne de l'équipe
-#   -m           mes reviews en attente, avec le lien de chaque PR
-#   -d           toute l'équipe, avec le lien de chaque PR
-#   -a LOGIN     ajouter une ou plusieurs personnes à ma liste d'équipe
-#                ex: review-load -a pseudo1 pseudo2
-#   -o ORG       limiter à une organisation (répétable)  ex: -o glpi
-#                raccourcis : glpi = dépôt glpi-project/glpi (le core),
-#                             plugins = pluginsGLPI + glpi-network
-#                défaut (ni -o ni -r) : plugins
-#   -r REPO      limiter à un dépôt (répétable)          ex: -r pluginsGLPI/fields
-#   -t FICHIER   liste des logins GitHub de l'équipe (1 par ligne, # = commentaire)
-#                défaut : $REVIEW_LOAD_TEAM, sinon ~/.config/review-load/team.txt
-#   --drafts     inclure les PR en brouillon (exclues par défaut)
+# Usage: review-load [-m | -d | -p] [-o org]... [-r owner/repo]... [-t team.txt] [--drafts]
+#        review-load -a LOGIN...
+#   (none)       pending reviews count per team member
+#   -m           my pending reviews, with a link to each PR
+#   -d           every team member's pending reviews, with links
+#   -p           status of my own open PRs: draft, approved, changes requested,
+#                pending reviewers, CI, conflicts
+#   -a LOGIN     add one or more people to my team list
+#                e.g. review-load -a pseudo1 pseudo2
+#   -o ORG       restrict to an organization (repeatable)  e.g. -o glpi
+#                shortcuts: glpi = glpi-project/glpi repository (the core),
+#                           plugins = pluginsGLPI + glpi-network
+#                default (no -o nor -r): plugins
+#   -r REPO      restrict to a repository (repeatable)     e.g. -r pluginsGLPI/fields
+#   -t FILE      team list of GitHub logins (one per line, # = comment)
+#                default: $REVIEW_LOAD_TEAM, else ~/.config/review-load/team.txt
+#   --drafts     include draft PRs (excluded by default)
 #
-# Prérequis : gh (authentifié via `gh auth login`) et jq.
+# Requirements: gh (authenticated with `gh auth login`) and jq.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -30,6 +32,7 @@ DETAILS=0
 ME=0
 DRAFTS=0
 ADD=()
+MINE=0
 PLUGIN_ORGS=(pluginsGLPI glpi-network)
 
 org_alias() {
@@ -54,41 +57,42 @@ while [[ $# -gt 0 ]]; do
         -r) SCOPE+=("repo:$(org_alias "${2%%/*}")/${2#*/}"); shift 2 ;;
         -d) DETAILS=1; shift ;;
         -m) ME=1; DETAILS=1; shift ;;
+        -p) MINE=1; shift ;;
         -a)
             shift
             while [[ $# -gt 0 && "$1" != -* ]]; do ADD+=("$1"); shift; done
-            [[ ${#ADD[@]} -gt 0 ]] || { echo "Usage : review-load -a LOGIN..." >&2; exit 1; } ;;
+            [[ ${#ADD[@]} -gt 0 ]] || { echo "Usage: review-load -a LOGIN..." >&2; exit 1; } ;;
         --drafts) DRAFTS=1; shift ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "Option inconnue : $1" >&2; exit 1 ;;
+        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
-command -v gh >/dev/null || { echo "gh introuvable" >&2; exit 1; }
-command -v jq >/dev/null || { echo "jq introuvable" >&2; exit 1; }
+command -v gh >/dev/null || { echo "gh not found" >&2; exit 1; }
+command -v jq >/dev/null || { echo "jq not found" >&2; exit 1; }
 
 if [[ ${#ADD[@]} -gt 0 ]]; then
     mkdir -p "$(dirname "$TEAM_FILE")"
     touch "$TEAM_FILE"
     for login in "${ADD[@]}"; do
-        # Vérifie que le compte existe et récupère l'orthographe exacte du login
+        # Check the account exists and get the exact spelling of the login
         if ! real=$(gh api "users/$login" --jq .login 2>/dev/null); then
-            echo "❌ $login : compte GitHub introuvable" >&2
+            echo "❌ $login: GitHub account not found" >&2
             continue
         fi
         if sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -qixF "$real"; then
-            echo "ℹ️  $real est déjà dans la liste"
+            echo "ℹ️  $real is already in the list"
         else
             [[ ! -s "$TEAM_FILE" || -z "$(tail -c1 "$TEAM_FILE")" ]] || echo >> "$TEAM_FILE"
             echo "$real" >> "$TEAM_FILE"
-            echo "✅ $real ajouté"
+            echo "✅ $real added"
         fi
     done
     echo "📝 $TEAM_FILE"
     exit 0
 fi
 
-# Prévient si une version plus récente est sur GitHub (seulement pour une copie installée via install.sh)
+# Warn when a newer version is on GitHub (only for a copy installed with install.sh)
 check_update() {
     local info="$SCRIPT_DIR/install.info" REPO REF SHA latest
     [[ -f "$info" ]] || return 0
@@ -99,7 +103,7 @@ check_update() {
     [[ -z "$latest" || "$latest" == "$SHA" ]] && return 0
     {
         echo
-        echo "⚠️  Une nouvelle version de review-load est disponible. Pour mettre à jour :"
+        echo "⚠️  A new version of review-load is available. To update:"
         echo "    gh api repos/$REPO/contents/install.sh -H 'Accept: application/vnd.github.raw' | bash"
     } >&2
 }
@@ -108,18 +112,67 @@ trap check_update EXIT
 if [[ $ME -eq 1 ]]; then
     MEMBERS=("$(gh api user --jq .login)")
 else
-    [[ -f "$TEAM_FILE" ]] || { echo "Fichier équipe introuvable : $TEAM_FILE (un login GitHub par ligne)" >&2; exit 1; }
+    [[ -f "$TEAM_FILE" ]] || { echo "Team file not found: $TEAM_FILE (one GitHub login per line)" >&2; exit 1; }
     mapfile -t MEMBERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -v '^$')
-    [[ ${#MEMBERS[@]} -gt 0 ]] || { echo "Aucun membre dans $TEAM_FILE : ajoute un login GitHub par ligne." >&2; exit 1; }
+    [[ ${#MEMBERS[@]} -gt 0 ]] || { echo "No member in $TEAM_FILE: add one GitHub login per line." >&2; exit 1; }
 fi
 
-# user-review-requested = demande nominative encore en attente (disparaît dès que la review est soumise)
+# user-review-requested = direct request still pending (gone as soon as the review is submitted)
 BASE="is:pr is:open archived:false"
 [[ $DRAFTS -eq 1 ]] || BASE+=" draft:false"
 if [[ ${#SCOPE[@]} -eq 0 ]]; then
     for o in "${PLUGIN_ORGS[@]}"; do SCOPE+=("org:$o"); done
 fi
 BASE+=" ${SCOPE[*]}"
+
+if [[ $MINE -eq 1 ]]; then
+    # Drafts included: we want to see all our open PRs
+    gh api graphql \
+        -f q="is:pr is:open archived:false author:$(gh api user --jq .login) ${SCOPE[*]} sort:created-asc" \
+        -f query='
+        query($q: String!) {
+          search(query: $q, type: ISSUE, first: 100) {
+            issueCount
+            nodes {
+              ... on PullRequest {
+                number title url isDraft mergeable reviewDecision
+                repository { nameWithOwner }
+                reviewRequests(first: 20) {
+                  nodes { requestedReviewer { ... on User { login } ... on Team { name } } }
+                }
+                latestReviews(first: 20) { nodes { state author { login } } }
+                commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+              }
+            }
+          }
+        }' | jq -r '
+        def by(st): [.latestReviews.nodes[] | select(.state == st) | .author.login];
+        def status:
+            if .isDraft then [4, "📝 Draft"]
+            elif .reviewDecision == "CHANGES_REQUESTED" or (by("CHANGES_REQUESTED") | length > 0) then [0, "🔁 Changes requested"]
+            elif .reviewDecision == "APPROVED" or (.reviewDecision == null and (by("APPROVED") | length > 0)) then [1, "✅ Approved"]
+            elif (.reviewRequests.nodes | length > 0) then [2, "👀 Waiting for review"]
+            else [3, "❔ No reviewer"] end;
+        def ci:
+            {"SUCCESS": "CI ✅", "FAILURE": "CI ❌", "ERROR": "CI ❌", "PENDING": "CI ⏳", "EXPECTED": "CI ⏳"}[.commits.nodes[0].commit.statusCheckRollup.state // ""];
+        def part($t; $l): if ($l | length) > 0 then "\($t) \($l | join(", "))" else empty end;
+
+        .data.search as $s
+        | "My open PRs — \($s.issueCount)",
+          ($s.nodes | map(. + {st: status}) | sort_by(.st[0]) | .[]
+            | "",
+              "\(.st[1])  \(.repository.nameWithOwner)#\(.number)  \(.title)",
+              "    \(.url)",
+              ([ part("✅ approved:"; by("APPROVED")),
+                 part("🔁 changes:"; by("CHANGES_REQUESTED")),
+                 part("💬 commented:"; by("COMMENTED")),
+                 part("⏳ pending:"; [.reviewRequests.nodes[].requestedReviewer | .login // ("@" + .name)]),
+                 (ci // empty),
+                 (if .mergeable == "CONFLICTING" then "⚠️ conflicts" else empty end)
+               ] | select(length > 0) | "    " + join("  ·  ")))
+        '
+    exit 0
+fi
 
 RESULTS=""
 declare -A JSON
@@ -143,7 +196,7 @@ while IFS=$'\t' read -r c l; do
     [[ $first -eq 1 ]] || echo
     first=0
     jq -r --arg l "$l" '
-        "\($l) — \(.total_count) review(s) en attente",
+        "\($l) — \(.total_count) pending review(s)",
         (.items[] |
             "  \(.repository_url | sub(".*/repos/"; ""))#\(.number)  \(.title)  (@\(.user.login), \(.created_at[0:10]))",
             "    \(.html_url)")

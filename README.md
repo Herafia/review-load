@@ -10,9 +10,20 @@ pseudo2                2
 pseudo3                1
 
 $ review-load -m
-pseudo3 — 1 review(s) en attente
+pseudo3 — 1 pending review(s)
   pluginsGLPI/example#42  Fix something important  (@pseudo1, 2026-10-01)
     https://github.com/pluginsGLPI/example/pull/42
+
+$ review-load -p
+My open PRs — 2
+
+🔁 Changes requested  pluginsGLPI/example#43  Add a new feature
+    https://github.com/pluginsGLPI/example/pull/43
+    ✅ approved: pseudo1  ·  🔁 changes: pseudo2  ·  ⏳ pending: pseudo3  ·  CI ✅
+
+📝 Draft  pluginsGLPI/example#44  Work in progress
+    https://github.com/pluginsGLPI/example/pull/44
+    CI ❌  ·  ⚠️ conflicts
 ```
 
 ## Installation
@@ -32,6 +43,7 @@ Running the same command again updates the tool.
 review-load                          # pending reviews count per team member (plugins)
 review-load -m                       # my pending reviews, with a link to each PR
 review-load -d                       # every team member's pending reviews, with links
+review-load -p                       # status of my own open PRs (see below)
 review-load -a pseudo1 pseudo2       # add people to your team list
 review-load -o glpi                  # GLPI core (glpi-project/glpi repository)
 review-load -o glpi -o plugins       # core + plugins
@@ -49,6 +61,20 @@ Any other organization can be passed by its full name (e.g. `-o teclib`).
 - **Open** PRs (not merged, not closed), excluding drafts and archived repositories;
 - **direct review requests that are still pending**: as soon as the person submits
   their review, the PR no longer counts for them.
+
+## Status of my PRs (`-p`)
+
+`review-load -p` lists your own open PRs (drafts included), grouped by status:
+
+- 🔁 changes requested
+- ✅ approved
+- 👀 waiting for review
+- ❔ no reviewer
+- 📝 draft
+
+For each PR: who approved, who requested changes, who commented, whose review is
+still pending, the CI status and merge conflicts. Same scope as the other modes
+(`-o`, `-r`, plugins by default).
 
 ## Your team
 
