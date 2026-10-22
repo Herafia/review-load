@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# review-load — Qui a combien de reviews en attente sur des PR ouvertes ?
+#
+# Usage : review-load [-t team.txt] [-o org]... [-r owner/repo]... [-d] [--drafts]
+#   -t FICHIER   liste des logins GitHub de l'équipe (1 par ligne, # = commentaire)
+#                défaut : $REVIEW_LOAD_TEAM, sinon ~/.config/review-load/team.txt,
+#                sinon team.txt livré avec l'outil
+#   -o ORG       limiter à une organisation (répétable)  ex: -o glpi-project
+#   -r REPO      limiter à un dépôt (répétable)          ex: -r glpi-project/glpi
+#   -d           détail : liste les PR de chaque personne
+#   --drafts     inclure les PR en brouillon (exclues par défaut)
+#
+# Prérequis : gh (authentifié via `gh auth login`) et jq.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+TEAM_FILE="${REVIEW_LOAD_TEAM:-}"
+if [[ -z "$TEAM_FILE" ]]; then
+    TEAM_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/review-load/team.txt"
+    [[ -f "$TEAM_FILE" ]] || TEAM_FILE="$SCRIPT_DIR/team.txt"
+fi
+SCOPE=()
+DETAILS=0
+DRAFTS=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -t) TEAM_FILE="$2"; shift 2 ;;
+        -o) SCOPE+=("org:$2"); shift 2 ;;
+        -r) SCOPE+=("repo:$2"); shift 2 ;;
+        -d) DETAILS=1; shift ;;
+        --drafts) DRAFTS=1; shift ;;
+        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "Option inconnue : $1" >&2; exit 1 ;;
+    esac
+done
+
+command -v gh >/dev/null || { echo "gh introuvable" >&2; exit 1; }
+command -v jq >/dev/null || { echo "jq introuvable" >&2; exit 1; }
+[[ -f "$TEAM_FILE" ]] || { echo "Fichier équipe introuvable : $TEAM_FILE" >&2; exit 1; }
+
+mapfile -t MEMBERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -v '^$')
+[[ ${#MEMBERS[@]} -gt 0 ]] || { echo "Aucun membre dans $TEAM_FILE" >&2; exit 1; }
+
+# user-review-requested = demande nominative encore en attente (disparaît dès que la review est soumise)
+BASE="is:pr is:open archived:false"
+[[ $DRAFTS -eq 1 ]] || BASE+=" draft:false"
+[[ ${#SCOPE[@]} -gt 0 ]] && BASE+=" ${SCOPE[*]}"
+
+RESULTS=""
+for login in "${MEMBERS[@]}"; do
+    json=$(gh api -X GET search/issues \
+        -f q="$BASE user-review-requested:$login" \
+        -f per_page=100 -f sort=created -f order=asc)
+    count=$(jq '.total_count' <<<"$json")
+    RESULTS+="$count"$'\t'"$login"$'\n'
+    if [[ $DETAILS -eq 1 ]]; then
+        DETAIL_OUT+="$(jq -r --arg l "$login" '
+            "\n\($l) (\(.total_count))",
+            (.items[] | "  - \(.repository_url | sub(".*/repos/"; ""))#\(.number)  \(.title)  [@\(.user.login), \(.created_at[0:10])]")
+        ' <<<"$json")"$'\n'
+    fi
+done
+
+printf '%-25s %s\n' "MEMBRE" "REVIEWS EN ATTENTE"
+printf '%-25s %s\n' "-------------------------" "------------------"
+printf '%s' "$RESULTS" | sort -t$'\t' -k1,1nr -k2,2 | while IFS=$'\t' read -r c l; do
+    bar=$(printf '%*s' "$c" '' | tr ' ' '#')
+    printf '%-25s %3d  %s\n' "$l" "$c" "$bar"
+done
+total=$(printf '%s' "$RESULTS" | awk -F'\t' '{s+=$1} END{print s+0}')
+printf '\nTotal : %d review(s) en attente\n' "$total"
+
+[[ $DETAILS -eq 1 ]] && printf '%s' "${DETAIL_OUT:-}"
+exit 0
