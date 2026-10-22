@@ -23,7 +23,7 @@ Requirements: [`gh`](https://cli.github.com/) authenticated (`gh auth login`) an
 gh api repos/Herafia/review-load/contents/install.sh -H 'Accept: application/vnd.github.raw' | bash
 ```
 
-Running the same command again updates the tool (including the team list).
+Running the same command again updates the tool.
 `review-load` tells you when a newer version is available on GitHub.
 
 ## Usage
@@ -49,10 +49,11 @@ Any other organization can be passed by its full name (e.g. `-o teclib`).
 - **direct review requests that are still pending**: as soon as the person submits
   their review, the PR no longer counts for them.
 
-## The team
+## Your team
 
-Team members are listed in [`team.txt`](team.txt) (one GitHub login per line).
-To add someone: edit this file in the repository, then everyone re-runs the install command.
+Each person has their own team list in `~/.config/review-load/team.txt`
+(one GitHub login per line, `#` for comments). It is created on first install
+with your own login, and is never overwritten by updates.
 
-To use your own list: `~/.config/review-load/team.txt`, the `REVIEW_LOAD_TEAM`
-environment variable, or the `-t file` option.
+You can also point to another list with the `REVIEW_LOAD_TEAM` environment variable
+or the `-t file` option. `review-load -m` does not need a team list.

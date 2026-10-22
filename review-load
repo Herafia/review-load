@@ -11,8 +11,7 @@
 #                défaut (ni -o ni -r) : plugins
 #   -r REPO      limiter à un dépôt (répétable)          ex: -r glpi/glpi
 #   -t FICHIER   liste des logins GitHub de l'équipe (1 par ligne, # = commentaire)
-#                défaut : $REVIEW_LOAD_TEAM, sinon ~/.config/review-load/team.txt,
-#                sinon team.txt livré avec l'outil
+#                défaut : $REVIEW_LOAD_TEAM, sinon ~/.config/review-load/team.txt
 #   --drafts     inclure les PR en brouillon (exclues par défaut)
 #
 # Prérequis : gh (authentifié via `gh auth login`) et jq.
@@ -22,7 +21,6 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 TEAM_FILE="${REVIEW_LOAD_TEAM:-}"
 if [[ -z "$TEAM_FILE" ]]; then
     TEAM_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/review-load/team.txt"
-    [[ -f "$TEAM_FILE" ]] || TEAM_FILE="$SCRIPT_DIR/team.txt"
 fi
 SCOPE=()
 DETAILS=0
@@ -53,7 +51,7 @@ while [[ $# -gt 0 ]]; do
         -d) DETAILS=1; shift ;;
         -m) ME=1; DETAILS=1; shift ;;
         --drafts) DRAFTS=1; shift ;;
-        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Option inconnue : $1" >&2; exit 1 ;;
     esac
 done
@@ -81,9 +79,9 @@ trap check_update EXIT
 if [[ $ME -eq 1 ]]; then
     MEMBERS=("$(gh api user --jq .login)")
 else
-    [[ -f "$TEAM_FILE" ]] || { echo "Fichier équipe introuvable : $TEAM_FILE" >&2; exit 1; }
+    [[ -f "$TEAM_FILE" ]] || { echo "Fichier équipe introuvable : $TEAM_FILE (un login GitHub par ligne)" >&2; exit 1; }
     mapfile -t MEMBERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -v '^$')
-    [[ ${#MEMBERS[@]} -gt 0 ]] || { echo "Aucun membre dans $TEAM_FILE" >&2; exit 1; }
+    [[ ${#MEMBERS[@]} -gt 0 ]] || { echo "Aucun membre dans $TEAM_FILE : ajoute un login GitHub par ligne." >&2; exit 1; }
 fi
 
 # user-review-requested = demande nominative encore en attente (disparaît dès que la review est soumise)
