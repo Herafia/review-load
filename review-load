@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # review-load — Qui a combien de reviews en attente sur des PR ouvertes ?
 #
-# Usage : review-load [-t team.txt] [-o org]... [-r owner/repo]... [-d] [--drafts]
+# Usage : review-load [-m | -d] [-o org]... [-r owner/repo]... [-t team.txt] [--drafts]
+#   (rien)       nombre de reviews en attente par personne de l'équipe
+#   -m           mes reviews en attente, avec le lien de chaque PR
+#   -d           toute l'équipe, avec le lien de chaque PR
+#   -o ORG       limiter à une organisation (répétable)  ex: -o glpi
+#                raccourcis : glpi = dépôt glpi-project/glpi (le core),
+#                             plugins = pluginsGLPI + glpi-network
+#                défaut (ni -o ni -r) : plugins
+#   -r REPO      limiter à un dépôt (répétable)          ex: -r glpi/glpi
 #   -t FICHIER   liste des logins GitHub de l'équipe (1 par ligne, # = commentaire)
 #                défaut : $REVIEW_LOAD_TEAM, sinon ~/.config/review-load/team.txt,
 #                sinon team.txt livré avec l'outil
-#   -o ORG       limiter à une organisation (répétable)  ex: -o glpi-project
-#   -r REPO      limiter à un dépôt (répétable)          ex: -r glpi-project/glpi
-#   -d           détail : liste les PR de chaque personne
 #   --drafts     inclure les PR en brouillon (exclues par défaut)
 #
 # Prérequis : gh (authentifié via `gh auth login`) et jq.
@@ -21,55 +26,101 @@ if [[ -z "$TEAM_FILE" ]]; then
 fi
 SCOPE=()
 DETAILS=0
+ME=0
 DRAFTS=0
+PLUGIN_ORGS=(pluginsGLPI glpi-network)
+
+org_alias() {
+    case "$1" in
+        glpi) echo "glpi-project" ;;
+        *) echo "$1" ;;
+    esac
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -t) TEAM_FILE="$2"; shift 2 ;;
-        -o) SCOPE+=("org:$2"); shift 2 ;;
-        -r) SCOPE+=("repo:$2"); shift 2 ;;
+        -o)
+            if [[ "$2" == plugins ]]; then
+                for o in "${PLUGIN_ORGS[@]}"; do SCOPE+=("org:$o"); done
+            elif [[ "$2" == glpi ]]; then
+                SCOPE+=("repo:glpi-project/glpi")
+            else
+                SCOPE+=("org:$(org_alias "$2")")
+            fi
+            shift 2 ;;
+        -r) SCOPE+=("repo:$(org_alias "${2%%/*}")/${2#*/}"); shift 2 ;;
         -d) DETAILS=1; shift ;;
+        -m) ME=1; DETAILS=1; shift ;;
         --drafts) DRAFTS=1; shift ;;
-        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Option inconnue : $1" >&2; exit 1 ;;
     esac
 done
 
 command -v gh >/dev/null || { echo "gh introuvable" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq introuvable" >&2; exit 1; }
-[[ -f "$TEAM_FILE" ]] || { echo "Fichier équipe introuvable : $TEAM_FILE" >&2; exit 1; }
 
-mapfile -t MEMBERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -v '^$')
-[[ ${#MEMBERS[@]} -gt 0 ]] || { echo "Aucun membre dans $TEAM_FILE" >&2; exit 1; }
+# Prévient si une version plus récente est sur GitHub (seulement pour une copie installée via install.sh)
+check_update() {
+    local info="$SCRIPT_DIR/install.info" REPO REF SHA latest
+    [[ -f "$info" ]] || return 0
+    REPO=$(sed -n 's/^REPO=//p' "$info")
+    REF=$(sed -n 's/^REF=//p' "$info")
+    SHA=$(sed -n 's/^SHA=//p' "$info")
+    latest=$(gh api "repos/$REPO/commits/$REF" --jq .sha 2>/dev/null) || return 0
+    [[ -z "$latest" || "$latest" == "$SHA" ]] && return 0
+    {
+        echo
+        echo "⚠️  Une nouvelle version de review-load est disponible. Pour mettre à jour :"
+        echo "    gh api repos/$REPO/contents/install.sh -H 'Accept: application/vnd.github.raw' | bash"
+    } >&2
+}
+trap check_update EXIT
+
+if [[ $ME -eq 1 ]]; then
+    MEMBERS=("$(gh api user --jq .login)")
+else
+    [[ -f "$TEAM_FILE" ]] || { echo "Fichier équipe introuvable : $TEAM_FILE" >&2; exit 1; }
+    mapfile -t MEMBERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -v '^$')
+    [[ ${#MEMBERS[@]} -gt 0 ]] || { echo "Aucun membre dans $TEAM_FILE" >&2; exit 1; }
+fi
 
 # user-review-requested = demande nominative encore en attente (disparaît dès que la review est soumise)
 BASE="is:pr is:open archived:false"
 [[ $DRAFTS -eq 1 ]] || BASE+=" draft:false"
-[[ ${#SCOPE[@]} -gt 0 ]] && BASE+=" ${SCOPE[*]}"
+if [[ ${#SCOPE[@]} -eq 0 ]]; then
+    for o in "${PLUGIN_ORGS[@]}"; do SCOPE+=("org:$o"); done
+fi
+BASE+=" ${SCOPE[*]}"
 
 RESULTS=""
+declare -A JSON
 for login in "${MEMBERS[@]}"; do
-    json=$(gh api -X GET search/issues \
+    JSON[$login]=$(gh api -X GET search/issues \
         -f q="$BASE user-review-requested:$login" \
         -f per_page=100 -f sort=created -f order=asc)
-    count=$(jq '.total_count' <<<"$json")
-    RESULTS+="$count"$'\t'"$login"$'\n'
-    if [[ $DETAILS -eq 1 ]]; then
-        DETAIL_OUT+="$(jq -r --arg l "$login" '
-            "\n\($l) (\(.total_count))",
-            (.items[] | "  - \(.repository_url | sub(".*/repos/"; ""))#\(.number)  \(.title)  [@\(.user.login), \(.created_at[0:10])]")
-        ' <<<"$json")"$'\n'
-    fi
+    RESULTS+="$(jq '.total_count' <<<"${JSON[$login]}")"$'\t'"$login"$'\n'
 done
+SORTED=$(printf '%s' "$RESULTS" | sort -t$'\t' -k1,1nr -k2,2)
 
-printf '%-25s %s\n' "MEMBRE" "REVIEWS EN ATTENTE"
-printf '%-25s %s\n' "-------------------------" "------------------"
-printf '%s' "$RESULTS" | sort -t$'\t' -k1,1nr -k2,2 | while IFS=$'\t' read -r c l; do
-    bar=$(printf '%*s' "$c" '' | tr ' ' '#')
-    printf '%-25s %3d  %s\n' "$l" "$c" "$bar"
-done
-total=$(printf '%s' "$RESULTS" | awk -F'\t' '{s+=$1} END{print s+0}')
-printf '\nTotal : %d review(s) en attente\n' "$total"
+if [[ $DETAILS -eq 0 ]]; then
+    while IFS=$'\t' read -r c l; do
+        printf '%-20s %3d\n' "$l" "$c"
+    done <<<"$SORTED"
+    exit 0
+fi
 
-[[ $DETAILS -eq 1 ]] && printf '%s' "${DETAIL_OUT:-}"
+first=1
+while IFS=$'\t' read -r c l; do
+    [[ $c -gt 0 || $ME -eq 1 ]] || continue
+    [[ $first -eq 1 ]] || echo
+    first=0
+    jq -r --arg l "$l" '
+        "\($l) — \(.total_count) review(s) en attente",
+        (.items[] |
+            "  \(.repository_url | sub(".*/repos/"; ""))#\(.number)  \(.title)  (@\(.user.login), \(.created_at[0:10]))",
+            "    \(.html_url)")
+    ' <<<"${JSON[$l]}"
+done <<<"$SORTED"
 exit 0

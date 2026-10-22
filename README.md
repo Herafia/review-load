@@ -4,13 +4,15 @@ A small CLI tool that shows **how many pending reviews each person has** on open
 to help spread review requests more evenly across the team.
 
 ```
-MEMBRE                    REVIEWS EN ATTENTE
-------------------------- ------------------
-alice                       4  ####
-bob                         2  ##
-Herafia                     1  #
+$ review-load
+alice                  4
+bob                    2
+Herafia                1
 
-Total : 7 review(s) en attente
+$ review-load -m
+Herafia — 1 review(s) en attente
+  pluginsGLPI/pdf#95  Fix/46642/groups values in pdf  (@alice, 2026-10-01)
+    https://github.com/pluginsGLPI/pdf/pull/95
 ```
 
 ## Installation
@@ -22,16 +24,24 @@ gh api repos/Herafia/review-load/contents/install.sh -H 'Accept: application/vnd
 ```
 
 Running the same command again updates the tool (including the team list).
+`review-load` tells you when a newer version is available on GitHub.
 
 ## Usage
 
 ```bash
-review-load -o glpi-project          # table per person
-review-load -o glpi-project -d       # + list of each person's PRs
-review-load -r glpi-project/glpi     # restricted to a single repository
+review-load                          # pending reviews count per team member (plugins)
+review-load -m                       # my pending reviews, with a link to each PR
+review-load -d                       # every team member's pending reviews, with links
+review-load -o glpi                  # GLPI core (glpi-project/glpi repository)
+review-load -o glpi -o plugins       # core + plugins
+review-load -r glpi/glpi             # restricted to a single repository
 review-load --drafts                 # include draft PRs
 review-load -h                       # help
 ```
+
+Shortcuts for `-o`: `glpi` = the `glpi-project/glpi` repository,
+`plugins` = `pluginsGLPI` + `glpi-network`.
+Any other organization can be passed by its full name (e.g. `-o teclib`).
 
 ## What is counted
 
