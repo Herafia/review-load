@@ -2,9 +2,12 @@
 # review-load — Qui a combien de reviews en attente sur des PR ouvertes ?
 #
 # Usage : review-load [-m | -d] [-o org]... [-r owner/repo]... [-t team.txt] [--drafts]
+#         review-load -a LOGIN...
 #   (rien)       nombre de reviews en attente par personne de l'équipe
 #   -m           mes reviews en attente, avec le lien de chaque PR
 #   -d           toute l'équipe, avec le lien de chaque PR
+#   -a LOGIN     ajouter une ou plusieurs personnes à ma liste d'équipe
+#                ex: review-load -a Lainow MyvTsv
 #   -o ORG       limiter à une organisation (répétable)  ex: -o glpi
 #                raccourcis : glpi = dépôt glpi-project/glpi (le core),
 #                             plugins = pluginsGLPI + glpi-network
@@ -26,6 +29,7 @@ SCOPE=()
 DETAILS=0
 ME=0
 DRAFTS=0
+ADD=()
 PLUGIN_ORGS=(pluginsGLPI glpi-network)
 
 org_alias() {
@@ -50,14 +54,39 @@ while [[ $# -gt 0 ]]; do
         -r) SCOPE+=("repo:$(org_alias "${2%%/*}")/${2#*/}"); shift 2 ;;
         -d) DETAILS=1; shift ;;
         -m) ME=1; DETAILS=1; shift ;;
+        -a)
+            shift
+            while [[ $# -gt 0 && "$1" != -* ]]; do ADD+=("$1"); shift; done
+            [[ ${#ADD[@]} -gt 0 ]] || { echo "Usage : review-load -a LOGIN..." >&2; exit 1; } ;;
         --drafts) DRAFTS=1; shift ;;
-        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Option inconnue : $1" >&2; exit 1 ;;
     esac
 done
 
 command -v gh >/dev/null || { echo "gh introuvable" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq introuvable" >&2; exit 1; }
+
+if [[ ${#ADD[@]} -gt 0 ]]; then
+    mkdir -p "$(dirname "$TEAM_FILE")"
+    touch "$TEAM_FILE"
+    for login in "${ADD[@]}"; do
+        # Vérifie que le compte existe et récupère l'orthographe exacte du login
+        if ! real=$(gh api "users/$login" --jq .login 2>/dev/null); then
+            echo "❌ $login : compte GitHub introuvable" >&2
+            continue
+        fi
+        if sed -e 's/#.*//' -e 's/[[:space:]]//g' "$TEAM_FILE" | grep -qixF "$real"; then
+            echo "ℹ️  $real est déjà dans la liste"
+        else
+            [[ ! -s "$TEAM_FILE" || -z "$(tail -c1 "$TEAM_FILE")" ]] || echo >> "$TEAM_FILE"
+            echo "$real" >> "$TEAM_FILE"
+            echo "✅ $real ajouté"
+        fi
+    done
+    echo "📝 $TEAM_FILE"
+    exit 0
+fi
 
 # Prévient si une version plus récente est sur GitHub (seulement pour une copie installée via install.sh)
 check_update() {

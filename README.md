@@ -32,6 +32,7 @@ Running the same command again updates the tool.
 review-load                          # pending reviews count per team member (plugins)
 review-load -m                       # my pending reviews, with a link to each PR
 review-load -d                       # every team member's pending reviews, with links
+review-load -a Lainow MyvTsv         # add people to your team list
 review-load -o glpi                  # GLPI core (glpi-project/glpi repository)
 review-load -o glpi -o plugins       # core + plugins
 review-load -r glpi/glpi             # restricted to a single repository
@@ -54,6 +55,15 @@ Any other organization can be passed by its full name (e.g. `-o teclib`).
 Each person has their own team list in `~/.config/review-load/team.txt`
 (one GitHub login per line, `#` for comments). It is created on first install
 with your own login, and is never overwritten by updates.
+
+To add people, either edit the file or run:
+
+```bash
+review-load -a Lainow MyvTsv
+```
+
+Each login is checked against GitHub (unknown accounts are rejected, the exact
+spelling is fixed) and duplicates are ignored.
 
 You can also point to another list with the `REVIEW_LOAD_TEAM` environment variable
 or the `-t file` option. `review-load -m` does not need a team list.
