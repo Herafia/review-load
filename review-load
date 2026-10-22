@@ -12,7 +12,7 @@
 #                raccourcis : glpi = dépôt glpi-project/glpi (le core),
 #                             plugins = pluginsGLPI + glpi-network
 #                défaut (ni -o ni -r) : plugins
-#   -r REPO      limiter à un dépôt (répétable)          ex: -r glpi/glpi
+#   -r REPO      limiter à un dépôt (répétable)          ex: -r pluginsGLPI/fields
 #   -t FICHIER   liste des logins GitHub de l'équipe (1 par ligne, # = commentaire)
 #                défaut : $REVIEW_LOAD_TEAM, sinon ~/.config/review-load/team.txt
 #   --drafts     inclure les PR en brouillon (exclues par défaut)

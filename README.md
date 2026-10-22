@@ -35,7 +35,7 @@ review-load -d                       # every team member's pending reviews, with
 review-load -a Lainow MyvTsv         # add people to your team list
 review-load -o glpi                  # GLPI core (glpi-project/glpi repository)
 review-load -o glpi -o plugins       # core + plugins
-review-load -r glpi/glpi             # restricted to a single repository
+review-load -r pluginsGLPI/fields    # restricted to a single repository
 review-load --drafts                 # include draft PRs
 review-load -h                       # help
 ```
