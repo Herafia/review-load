@@ -1,7 +1,7 @@
 # review-load
 
-Petit outil CLI pour savoir **qui a combien de reviews en attente** sur des PR ouvertes,
-afin de mieux répartir les demandes de review dans l'équipe.
+A small CLI tool that shows **how many pending reviews each person has** on open PRs,
+to help spread review requests more evenly across the team.
 
 ```
 MEMBRE                    REVIEWS EN ATTENTE
@@ -15,34 +15,34 @@ Total : 7 review(s) en attente
 
 ## Installation
 
-Prérequis : [`gh`](https://cli.github.com/) authentifié (`gh auth login`) et `jq`.
+Requirements: [`gh`](https://cli.github.com/) authenticated (`gh auth login`) and `jq`.
 
 ```bash
 gh api repos/Herafia/review-load/contents/install.sh -H 'Accept: application/vnd.github.raw' | bash
 ```
 
-Relancer la même commande met l'outil à jour (y compris la liste de l'équipe).
+Running the same command again updates the tool (including the team list).
 
-## Utilisation
+## Usage
 
 ```bash
-review-load -o glpi-project          # tableau par personne
-review-load -o glpi-project -d       # + détail des PR de chacun
-review-load -r glpi-project/glpi     # limité à un dépôt
-review-load --drafts                 # inclut les PR en brouillon
-review-load -h                       # aide
+review-load -o glpi-project          # table per person
+review-load -o glpi-project -d       # + list of each person's PRs
+review-load -r glpi-project/glpi     # restricted to a single repository
+review-load --drafts                 # include draft PRs
+review-load -h                       # help
 ```
 
-## Ce qui est compté
+## What is counted
 
-- PR **ouvertes** (non mergées, non fermées), hors brouillons et dépôts archivés ;
-- demandes de review **nominatives encore en attente** : dès que la personne a soumis
-  sa review, la PR ne lui est plus comptée.
+- **Open** PRs (not merged, not closed), excluding drafts and archived repositories;
+- **direct review requests that are still pending**: as soon as the person submits
+  their review, the PR no longer counts for them.
 
-## L'équipe
+## The team
 
-La liste des membres est dans [`team.txt`](team.txt) (un login GitHub par ligne).
-Pour ajouter quelqu'un : modifier ce fichier dans le dépôt, puis chacun relance l'installation.
+Team members are listed in [`team.txt`](team.txt) (one GitHub login per line).
+To add someone: edit this file in the repository, then everyone re-runs the install command.
 
-Pour utiliser sa propre liste : `~/.config/review-load/team.txt`, la variable
-`REVIEW_LOAD_TEAM`, ou l'option `-t fichier`.
+To use your own list: `~/.config/review-load/team.txt`, the `REVIEW_LOAD_TEAM`
+environment variable, or the `-t file` option.
