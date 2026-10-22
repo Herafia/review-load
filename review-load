@@ -7,7 +7,7 @@
 #   -m           mes reviews en attente, avec le lien de chaque PR
 #   -d           toute l'équipe, avec le lien de chaque PR
 #   -a LOGIN     ajouter une ou plusieurs personnes à ma liste d'équipe
-#                ex: review-load -a Lainow MyvTsv
+#                ex: review-load -a pseudo1 pseudo2
 #   -o ORG       limiter à une organisation (répétable)  ex: -o glpi
 #                raccourcis : glpi = dépôt glpi-project/glpi (le core),
 #                             plugins = pluginsGLPI + glpi-network

@@ -5,14 +5,14 @@ to help spread review requests more evenly across the team.
 
 ```
 $ review-load
-alice                  4
-bob                    2
-Herafia                1
+pseudo1                4
+pseudo2                2
+pseudo3                1
 
 $ review-load -m
-Herafia — 1 review(s) en attente
-  pluginsGLPI/pdf#95  Fix/46642/groups values in pdf  (@alice, 2026-10-01)
-    https://github.com/pluginsGLPI/pdf/pull/95
+pseudo3 — 1 review(s) en attente
+  pluginsGLPI/example#42  Fix something important  (@pseudo1, 2026-10-01)
+    https://github.com/pluginsGLPI/example/pull/42
 ```
 
 ## Installation
@@ -32,7 +32,7 @@ Running the same command again updates the tool.
 review-load                          # pending reviews count per team member (plugins)
 review-load -m                       # my pending reviews, with a link to each PR
 review-load -d                       # every team member's pending reviews, with links
-review-load -a Lainow MyvTsv         # add people to your team list
+review-load -a pseudo1 pseudo2       # add people to your team list
 review-load -o glpi                  # GLPI core (glpi-project/glpi repository)
 review-load -o glpi -o plugins       # core + plugins
 review-load -r pluginsGLPI/fields    # restricted to a single repository
@@ -59,7 +59,7 @@ with your own login, and is never overwritten by updates.
 To add people, either edit the file or run:
 
 ```bash
-review-load -a Lainow MyvTsv
+review-load -a pseudo1 pseudo2
 ```
 
 Each login is checked against GitHub (unknown accounts are rejected, the exact
