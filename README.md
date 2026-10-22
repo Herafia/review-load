@@ -15,15 +15,13 @@ pseudo3 — 1 pending review(s)
     https://github.com/pluginsGLPI/example/pull/42
 
 $ review-load -p
-My open PRs — 2
+My open PRs — 3
+🔁 pluginsGLPI/example#43  Add a new feature                              2d    ✅ pseudo1  🔁 pseudo2  ⏳ pseudo3  CI ✅
+🚀 pluginsGLPI/example#45  Fix a small bug                                0d    ✅ pseudo1  CI ✅
+📝 pluginsGLPI/example#44  Work in progress                               12d   CI ❌  ⚠️ conflicts
 
-🔁 Changes requested  pluginsGLPI/example#43  Add a new feature
-    https://github.com/pluginsGLPI/example/pull/43
-    ✅ approved: pseudo1  ·  🔁 changes: pseudo2  ·  ⏳ pending: pseudo3  ·  CI ✅
-
-📝 Draft  pluginsGLPI/example#44  Work in progress
-    https://github.com/pluginsGLPI/example/pull/44
-    CI ❌  ·  ⚠️ conflicts
+🔁 changes requested  🚀 ready to merge  ✅ approved  👀 waiting for review  ❔ no reviewer  📝 draft
+💬 commented  ⏳ pending  ↻ re-requested after requesting changes  Nd = days without activity
 ```
 
 ## Installation
@@ -64,17 +62,22 @@ Any other organization can be passed by its full name (e.g. `-o teclib`).
 
 ## Status of my PRs (`-p`)
 
-`review-load -p` lists your own open PRs (drafts included), grouped by status:
+`review-load -p` lists your own open PRs (drafts included), one line per PR, grouped by status:
 
 - 🔁 changes requested
+- 🚀 ready to merge: you have the right to merge it and GitHub would let you merge it now
 - ✅ approved
 - 👀 waiting for review
 - ❔ no reviewer
 - 📝 draft
 
-For each PR: who approved, who requested changes, who commented, whose review is
-still pending, the CI status and merge conflicts. Same scope as the other modes
-(`-o`, `-r`, plugins by default).
+Each line shows the number of days without activity, who approved, who requested changes,
+who commented, whose review is still pending, the CI status and merge conflicts.
+Your own reviews are ignored. A reviewer who requested changes and was asked again for
+a review is shown as pending with `↻`: the PR is waiting on them, not on you.
+
+The PR number is a clickable link in terminals that support it (GNOME Terminal, Konsole,
+iTerm2, VS Code…). Same scope as the other modes (`-o`, `-r`, plugins by default).
 
 ## Your team
 

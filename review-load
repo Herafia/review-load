@@ -126,6 +126,8 @@ fi
 BASE+=" ${SCOPE[*]}"
 
 if [[ $MINE -eq 1 ]]; then
+    TTY=false
+    [[ -t 1 ]] && TTY=true
     # Drafts included: we want to see all our open PRs
     gh api graphql \
         -f q="is:pr is:open archived:false author:$(gh api user --jq .login) ${SCOPE[*]} sort:created-asc" \
@@ -135,45 +137,79 @@ if [[ $MINE -eq 1 ]]; then
             issueCount
             nodes {
               ... on PullRequest {
-                number title url isDraft mergeable reviewDecision
-                repository { nameWithOwner }
+                number title url isDraft mergeable mergeStateStatus reviewDecision updatedAt
+                author { login }
+                repository { nameWithOwner viewerPermission }
                 reviewRequests(first: 20) {
                   nodes { requestedReviewer { __typename ... on User { login } } }
                 }
-                latestReviews(first: 20) { nodes { state author { login } } }
+                latestOpinionatedReviews(first: 30) { nodes { state author { login } } }
+                latestReviews(first: 30) { nodes { state author { login } } }
                 commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
               }
             }
           }
-        }' | jq -r '
-        def by(st): [.latestReviews.nodes[] | select(.state == st) | .author.login];
+        }' | jq -r --argjson tty "$TTY" '
+        # Reviewer states, ignoring the reviews of the PR author:
+        # - decisive state = latest APPROVED / CHANGES_REQUESTED review (a later comment keeps it)
+        # - a reviewer currently requested again counts as pending, not on their old review
+        def reviewers:
+            .author.login as $me
+            # a team name would need the read:org scope, so teams are shown generically
+            | [.reviewRequests.nodes[].requestedReviewer | .login // "a team"] as $pending
+            | [.latestOpinionatedReviews.nodes[] | select(.author.login != $me)] as $op
+            | {
+                pending: $pending,
+                rerequested: [$op[] | select(.state == "CHANGES_REQUESTED") | .author.login | select(IN($pending[]))],
+                approved: [$op[] | select(.state == "APPROVED") | .author.login | select(IN($pending[]) | not)],
+                changes: [$op[] | select(.state == "CHANGES_REQUESTED") | .author.login | select(IN($pending[]) | not)],
+                commented: [.latestReviews.nodes[] | select(.state == "COMMENTED") | .author.login
+                            | select(. != $me and (IN($op[].author.login) | not) and (IN($pending[]) | not))]
+              };
+        # Same rule as the GitHub merge button: merge permission and a clean merge state
+        def ready:
+            (.isDraft | not)
+            and (.repository.viewerPermission | IN("WRITE", "MAINTAIN", "ADMIN"))
+            and ((.mergeStateStatus | IN("CLEAN", "HAS_HOOKS"))
+                 or (.mergeStateStatus == "BEHIND" and (.reviewDecision | IN("APPROVED", null))));
         def status:
-            if .isDraft then [4, "📝 Draft"]
-            elif .reviewDecision == "CHANGES_REQUESTED" or (by("CHANGES_REQUESTED") | length > 0) then [0, "🔁 Changes requested"]
-            elif .reviewDecision == "APPROVED" or (.reviewDecision == null and (by("APPROVED") | length > 0)) then [1, "✅ Approved"]
-            elif (.reviewRequests.nodes | length > 0) then [2, "👀 Waiting for review"]
-            else [3, "❔ No reviewer"] end;
+            if .isDraft then [5, "📝"]
+            elif (.rv.changes | length > 0) then [0, "🔁"]
+            elif ready then [1, "🚀"]
+            # still blocked by a reviewer who requested changes: waiting on them
+            elif (.rv.rerequested | length > 0) then [3, "👀"]
+            elif (.rv.approved | length > 0) or .reviewDecision == "APPROVED" then [2, "✅"]
+            elif (.rv.pending | length > 0) then [3, "👀"]
+            else [4, "❔"] end;
+        def idle: ((now - (.updatedAt | fromdateiso8601)) / 86400 | floor | tostring) + "d";
         def ci:
             {"SUCCESS": "CI ✅", "FAILURE": "CI ❌", "ERROR": "CI ❌", "PENDING": "CI ⏳", "EXPECTED": "CI ⏳"}[.commits.nodes[0].commit.statusCheckRollup.state // ""];
-        def part($t; $l): if ($l | length) > 0 then "\($t) \($l | join(", "))" else empty end;
+        def part($t; $l): if ($l | length) > 0 then "\($t) \($l | join(","))" else empty end;
+        def sp($n): if $n > 0 then " " * $n else "" end;
+        def pad($n): . + sp($n - length);
+        def cut($n): if length > $n then .[0:$n - 1] + "…" else . end;
+        # clickable link in terminals that support OSC 8, plain text otherwise
+        def link($url): if $tty then "\u001b]8;;\($url)\u001b\\\(.)\u001b]8;;\u001b\\" else . end;
 
         if .data.search == null then
             "Error: \(.errors[0].message // "unexpected GitHub response")\n" | halt_error(1)
         else . end
         | .data.search as $s
+        | ($s.nodes | map(. + {rv: reviewers, ref: "\(.repository.nameWithOwner)#\(.number)"} | . + {st: status})) as $prs
+        | ([$prs[].ref | length] | max // 0) as $w
         | "My open PRs — \($s.issueCount)",
-          ($s.nodes | map(. + {st: status}) | sort_by(.st[0]) | .[]
-            | "",
-              "\(.st[1])  \(.repository.nameWithOwner)#\(.number)  \(.title)",
-              "    \(.url)",
-              ([ part("✅ approved:"; by("APPROVED")),
-                 part("🔁 changes:"; by("CHANGES_REQUESTED")),
-                 part("💬 commented:"; by("COMMENTED")),
-                 # a team name would need the read:org scope, so teams are shown generically
-                 part("⏳ pending:"; [.reviewRequests.nodes[].requestedReviewer | .login // "a team"]),
-                 (ci // empty),
-                 (if .mergeable == "CONFLICTING" then "⚠️ conflicts" else empty end)
-               ] | select(length > 0) | "    " + join("  ·  ")))
+          ($prs | sort_by(.st[0]) | .[]
+            | .url as $u
+            | .rv.rerequested as $rr
+            | "\(.st[1]) \(.ref | link($u))\(sp($w - (.ref | length) + 2))\(.title | cut(45) | pad(45))  \(idle | pad(4))  "
+              + ([ part("✅"; .rv.approved),
+                   part("🔁"; .rv.changes),
+                   part("💬"; .rv.commented),
+                   part("⏳"; [.rv.pending[] | if IN($rr[]) then . + "↻" else . end]),
+                   (ci // empty),
+                   (if .mergeable == "CONFLICTING" then "⚠️ conflicts" else empty end)
+                 ] | join("  "))),
+          (if ($prs | length) > 0 then "\n🔁 changes requested  🚀 ready to merge  ✅ approved  👀 waiting for review  ❔ no reviewer  📝 draft\n💬 commented  ⏳ pending  ↻ re-requested after requesting changes  Nd = days without activity" else empty end)
         '
     exit 0
 fi
