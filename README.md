@@ -42,6 +42,8 @@ review-load                          # pending reviews count per team member (pl
 review-load -m                       # my pending reviews, with a link to each PR
 review-load -d                       # every team member's pending reviews, with links
 review-load -p                       # status of my own open PRs (see below)
+review-load --arena                   # review arena: team leaderboard and trophies (last 30 days)
+review-load --arena 90                # same, over the last 90 days
 review-load -a pseudo1 pseudo2       # add people to your team list
 review-load -o glpi                  # GLPI core (glpi-project/glpi repository)
 review-load -o glpi -o plugins       # core + plugins
@@ -87,6 +89,22 @@ Konsole, iTerm2, VS Code…). Same scope as the other modes (`-o`, `-r`, plugins
 
 GitHub search sometimes silently returns incomplete results: `-m`, `-d` and `-p` run it twice
 and merge the results, and warn you if PRs are still missing.
+
+## Review arena (`--arena`)
+
+`review-load --arena [DAYS]` shows, right in the terminal, a summary of the team's reviews
+over the last DAYS days (30 by default):
+
+- a podium and an XP leaderboard (PRs reviewed, approvals, changes requested, comments, speed…);
+- mostly useless trophies: fastest reviewer, slowest one, night owl, weekend warrior,
+  silent approvals, longest review, oldest PR reviewed, review requests still waiting…;
+- who reviews whom the most, and when the team reviews (day × hour heatmap).
+
+PRs opened by bots (GitHub apps and `*-sync` accounts) are left out of the stats:
+they only count for the 🤖 Bot Babysitter trophy.
+The response time runs from the review request to the next review by that person,
+nights and weekends included. Same scope as the other modes (`-o`, `-r`, plugins by default).
+It can take a minute or two: every PR touched by the team during the period is fetched.
 
 ## Your team
 

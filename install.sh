@@ -47,3 +47,4 @@ case ":$PATH:" in
 esac
 [[ -z "${NEW_TEAM:-}" ]] || echo "📝 Your team list: $TEAM_FILE (one GitHub login per line)"
 echo "👉 Try this: review-load -m"
+echo "🏟️  New: enter the review arena and see who wins the trophies: review-load --arena"
