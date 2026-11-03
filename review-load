@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # review-load — Who has how many pending reviews on open PRs?
 #
-# Usage: review-load [-m | -d | -p] [-o org]... [-r owner/repo]... [-t team.txt] [--drafts]
+# Usage: review-load [-m | -d | -p | --arena [DAYS]] [-o org]... [-r owner/repo]... [-t team.txt] [--drafts]
 #        review-load -a LOGIN...
 #   (none)       pending reviews count per team member
 #   -m           my pending reviews, with a link to each PR
 #   -d           every team member's pending reviews, with links
 #   -p           status of my own open PRs: draft, approved, changes requested,
 #                pending reviewers, CI, conflicts
+#   --arena [DAYS] review arena: leaderboard and (mostly useless) trophies about
+#                 the team's reviews over the last DAYS days (default 30)
 #   -a LOGIN     add one or more people to my team list
 #                e.g. review-load -a pseudo1 pseudo2
 #   -o ORG       restrict to an organization (repeatable)  e.g. -o glpi
@@ -33,6 +35,7 @@ ME=0
 DRAFTS=0
 ADD=()
 MINE=0
+STATS=0
 PLUGIN_ORGS=(pluginsGLPI glpi-network)
 
 org_alias() {
@@ -58,12 +61,15 @@ while [[ $# -gt 0 ]]; do
         -d) DETAILS=1; shift ;;
         -m) ME=1; DETAILS=1; shift ;;
         -p) MINE=1; shift ;;
+        --arena)
+            STATS=30; shift
+            if [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; then STATS="$1"; shift; fi ;;
         -a)
             shift
             while [[ $# -gt 0 && "$1" != -* ]]; do ADD+=("$1"); shift; done
             [[ ${#ADD[@]} -gt 0 ]] || { echo "Usage: review-load -a LOGIN..." >&2; exit 1; } ;;
         --drafts) DRAFTS=1; shift ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -143,6 +149,308 @@ search_ids() {
     [[ $(jq length <<<"$ids") -ge $count ]] || echo "⚠️  GitHub search returned incomplete results, some PRs may be missing: run again." >&2
     echo "$ids"
 }
+
+# Review arena (--arena): stats about the team's reviews over the last $STATS days.
+# PRs opened by bots are left out of the stats: they only count for their own trophy.
+BOT_PATTERN='(\[bot\]|-sync)$'
+
+search_all_ids() {
+    local q="$1" ids='[]' after="" json
+    while :; do
+        json=$(gh api graphql -f q="$q" ${after:+-f after="$after"} -f query='
+            query($q: String!, $after: String) {
+              search(query: $q, type: ISSUE, first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor } nodes { ... on PullRequest { id } }
+              }
+            }')
+        ids=$(jq -c --argjson ids "$ids" '$ids + [.data.search.nodes[].id] | unique' <<<"$json")
+        [[ $(jq -r .data.search.pageInfo.hasNextPage <<<"$json") == true ]] || break
+        after=$(jq -r .data.search.pageInfo.endCursor <<<"$json")
+    done
+    echo "$ids"
+}
+
+# Input: the PRs (with their review requests and reviews), output: the arena, ready to print
+ARENA_JQ='
+def key: ascii_downcase;
+def c($code): if $tty then "\u001b[\($code)m\(.)\u001b[0m" else . end;
+def b: c("1");
+def dim: c("2");
+def gold: c("1;38;5;220");
+def orange: c("1;38;5;208");
+def silver: c("1;38;5;252");
+def bronze: c("1;38;5;173");
+def teal: c("38;5;43");
+def pink: c("1;38;5;205");
+def sp($n): if $n > 0 then " " * $n else "" end;
+def pad($n): . + sp($n - length);
+def lpad($n): sp($n - length) + .;
+def center($n): ((($n - length) / 2) | floor) as $l | sp($l) + . + sp($n - length - $l);
+def cut($n): if length > $n then .[0:$n - 1] + "…" else . end;
+def link($url): if $tty then "\u001b]8;;\($url)\u001b\\\(.)\u001b]8;;\u001b\\" else . end;
+def z2: tostring | if length < 2 then "0" + . else . end;
+def plural($w): "\(.) \($w)\(if . == 1 then "" else "s" end)";
+def thousands: tostring | [scan("\\d{1,3}(?=(?:\\d{3})*$)")] | join(",");
+def median: sort | length as $n
+    | if $n == 0 then null elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
+def dur: (. / 60) as $m
+    | if $m < 60 then "\([1, ($m | round)] | max) min"
+      elif $m < 2880 then "\($m / 60 | floor) h \(($m | floor) % 60 | z2)"
+      else "\($m / 1440 * 10 | round / 10) days" end;
+def level: . as $x
+    | [[0, "Diff Tourist"], [40, "Junior Nitpicker"], [120, "Code Whisperer"],
+       [250, "Review Knight"], [450, "Grand Reviewer"], [700, "Merge Deity"]]
+    | map(select(.[0] <= $x)) | last[1];
+def section($title): "", ($title | pink), ("─" * 64 | dim);
+def paint($col): if $col == "gold" then gold elif $col == "silver" then silver else bronze end;
+def DAYS: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+. as $prs
+| ($team | map(key)) as $tk
+# Events of each team member on each PR, in order: a review answers the pending request
+| [ $prs[] as $pr
+    | ($pr.author | key) as $a
+    | [$pr.ev[] | (.who | key) as $w | select($w != $a and ($w | IN($tk[]))) | . + {w: $w, ts: (.at | fromdateiso8601)}]
+    | group_by(.w)[]
+    | sort_by(.ts)
+    | {w: .[0].w, pr: $pr} + reduce .[] as $e ({waiting: null, requested: false, out: []};
+        if $e.t == "req" then (.waiting //= $e.ts) | .requested = (.requested or $e.ts >= $since)
+        elif $e.t == "unreq" then .waiting = null
+        else (if $e.ts >= $since and $e.state != "PENDING"
+              then .out += [$e + {delay: (if .waiting then $e.ts - .waiting else null end)}]
+              else . end)
+             | .waiting = null
+        end)
+  ] as $pw
+| [$pw[] | select(.pr.bot | not)] as $H
+| [ $team[] as $login | ($login | key) as $k
+    | [$H[] | select(.w == $k)] as $items
+    | [$items[] | select(.out | length > 0)] as $rev
+    | [$rev[] | .pr as $p | .out[] | (.ts | localtime) as $lt
+       | . + {pr: $p, h: $lt[3], mi: $lt[4], wd: $lt[6], age: (.ts - ($p.createdAt | fromdateiso8601))}] as $r
+    | [$r[] | select(.delay != null)] as $d
+    | ([$d[].delay] | median) as $med
+    | ($r | min_by((.h * 60 + .mi + 1140) % 1440)) as $early
+    | {
+        login: $login, r: $r,
+        n: ($rev | length),
+        subs: ($r | length),
+        approved: ([$r[] | select(.state == "APPROVED")] | length),
+        changes: ([$r[] | select(.state == "CHANGES_REQUESTED")] | length),
+        comments: ([$r[].comments] | add // 0),
+        median: $med,
+        flash: (if ($d | length) >= 3 then $med else null end),
+        fastest: ($d | min_by(.delay)),
+        night: ([$r[] | select(.h >= 20 or .h < 6)] | length),
+        weekend: ([$r[] | select(.wd == 0 or .wd == 6)] | length),
+        friday: ([$r[] | select(.wd == 5 and .h >= 17)] | length),
+        # the day starts at 5 am: a review at 1 am is a late one, not an early one
+        early: $early,
+        earlyv: (if $early then ($early.h * 60 + $early.mi + 1140) % 1440 else null end),
+        silent: ([$r[] | select(.state == "APPROVED" and .len == 0 and .comments == 0)] | length),
+        longest: ($r | max_by(.len)),
+        lines: ([$rev[].pr.size] | add // 0),
+        oldest: ($r | max_by(.age)),
+        requested: ([$items[] | select(.requested)] | length),
+        ghost: ([$items[] | select(.waiting != null and .pr.state == "OPEN")] | length),
+        authored: ([$prs[] | select((.author | key) == $k and (.bot | not) and (.createdAt | fromdateiso8601) >= $since)] | length),
+        bots: ([$pw[] | select(.pr.bot and .w == $k and (.out | length > 0))] | length),
+        victims: ([$rev[].pr.author] | group_by(.) | map({a: .[0], n: length}))
+      }
+    | . + {
+        care: (if .subs >= 5 then .approved / .subs else null end),
+        quick: .fastest.delay, tolstoy: .longest.len, necro: .oldest.age,
+        xp: ([0, 10 * .n + 5 * .changes + 2 * .approved + .comments
+              + (if .median != null and .median < 14400 then 25 else 0 end) - 3 * .ghost] | max)
+      }
+    | . + {level: (.xp | level)}
+  ] | sort_by(-.xp, .login) as $P
+| [$P[].r[]] as $all
+| ([$all[].delay | select(. != null)] | median) as $teamMed
+| (reduce $all[] as $x ([range(7)] | map([range(24)] | map(0)); .[$x.wd][$x.h] += 1)) as $heat
+| ([$heat[][]] | max | if . > 0 then . else 1 end) as $maxHeat
+| ([range(7) as $d | range(24) as $h | {d: $d, h: $h, v: $heat[$d][$h]}] | max_by(.v)) as $rush
+| ([$pw[] | select(.pr.bot and (.out | length > 0)) | .pr.ref] | unique | length) as $botPrs
+
+# ── banner
+| "",
+  ("  █▀█ █▀▀ █ █ █ █▀▀ █ █ █   ▄▀█ █▀█ █▀▀ █▄ █ ▄▀█" | gold),
+  ("  █▀▄ ██▄ ▀▄▀ █ ██▄ ▀▄▀▄▀   █▀█ █▀▄ ██▄ █ ▀█ █▀█" | orange),
+  "",
+  ("  Last \($days) days · \($sinceDate) → today · \($scope | gsub("(org|repo):"; ""))" | dim),
+  "",
+  "  \($all | length | tostring | b) reviews · \([$all[].pr.ref] | unique | length | tostring | b) PRs reviewed · ✅ \((if ($all | length) > 0 then ([$all[] | select(.state == "APPROVED")] | length) * 100 / ($all | length) | round else 0 end) | tostring | b) % approvals",
+  "  ⚡ \(if $teamMed then $teamMed | dur else "—" end | b) median response · 🔥 rush hour \(if $rush.v > 0 then "\(DAYS[$rush.d]) \($rush.h):00" else "—" end | b)",
+  ("  🤖 + \($botPrs) bot PRs reviewed, not counted (see the 🤖 trophy)" | dim)
+
+# ── podium: 2nd, 1st, 3rd; columns of 20 characters, the boxes have different heights
+, (
+    [$P[] | select(.xp > 0)][0:3] as $top
+    | 20 as $W
+    | [[1, 3, "silver"], [0, 5, "gold"], [2, 2, "bronze"]]
+    | map(. as [$i, $bh, $col] | $top[$i] as $m
+        | if $m == null then [] else
+            [ (if $i == 0 then sp(9) + "👑" + sp(9) else sp($W) end),
+              ($m.login | cut($W - 2) | center($W) | paint($col)),
+              ("\($m.xp) XP" | center($W) | b),
+              ("  ┌" + "─" * ($W - 6) + "┐  " | paint($col)),
+              ("  │" + ($i + 1 | tostring | center($W - 6)) + "│  " | paint($col)),
+              (range($bh - 1) | "  │" + sp($W - 6) + "│  " | paint($col)) ]
+          end) as $cols
+    | ([$cols[] | length] | max) as $height
+    | section("🏁 PODIUM"), "",
+      (range($height) as $row
+       | "  " + ([$cols[] | ($height - length) as $off
+                  | if $row < $off then sp($W) else .[$row - $off] end] | join(""))),
+      ("  " + "▀" * (3 * $W) | dim)
+  )
+
+# ── leaderboard
+, (
+    ([$P[].xp] | max // 1 | if . == 0 then 1 else . end) as $maxXp
+    | section("🎮 PLAYERS"),
+      ($P | to_entries[] | .key as $i | .value as $m
+       | (($m.xp * 20 / $maxXp) | round) as $fill
+       | "  \(if $i < 3 then ["🥇", "🥈", "🥉"][$i] else ($i + 1 | tostring | lpad(2)) end)  \($m.login | cut(15) | pad(15) | b) \($m.level | pad(16) | dim) \(("█" * $fill) | teal)\(("░" * (20 - $fill)) | dim) \("\($m.xp) XP" | lpad(8) | gold)",
+         ("      🔍 \($m.n) PRs  ✅ \($m.approved)  🔁 \($m.changes)  💬 \($m.comments)"
+          + (if $m.median then "  ⚡ \($m.median | dur)" else "" end)
+          + "  📝 \($m.authored) opened"
+          + (if $m.ghost > 0 then "  👻 \($m.ghost) waiting" else "" end) | dim))
+  )
+
+# ── trophies
+, (
+    def trophy($e; $name; $desc; $f; $low; $fmt; $prf):
+        [$P[] | {m: ., v: .[$f]} | select(.v != null and ($low or .v > 0))] as $c
+        | if ($c | length) == 0 then
+              "  \($e) \($name | pad(19) | dim) \("nobody… yet" | dim)",
+              "     \($desc | dim)"
+          else
+              (if $low then [$c[].v] | min else [$c[].v] | max end) as $best
+              | [$c[] | select(.v == $best)] as $win
+              | $win[0].m as $w
+              | (if $fmt == "dur" then $best | dur
+                 elif $fmt == "pct" then "\($best * 100 | round) %"
+                 elif $fmt == "clock" then "\($w.early.h | z2):\($w.early.mi | z2)"
+                 elif $fmt == "days" then "\($best / 86400 | floor) days old"
+                 elif $fmt == "lines" then "\($best | thousands) lines"
+                 else $best | plural($fmt) end) as $val
+              | (if $prf and ($win | length) == 1 then $w[$prf].pr as $p | "  " + ($p.ref | link($p.url)) | dim else "" end) as $ref
+              | "  \($e) \($name | pad(19) | b) \([$win[].m.login] | join(", ") | pad(16) | gold) \($val)\($ref)",
+                "     \($desc | dim)"
+          end;
+    section("🏅 TROPHIES  " + ("100 % useless, 0 % contractual" | dim)),
+    trophy("🏆"; "Review Machine"; "most PRs reviewed"; "n"; false; "PR"; null),
+    trophy("⚡"; "The Flash"; "fastest median response to a review request (min. 3)"; "flash"; true; "dur"; null),
+    trophy("🎯"; "Quick Draw"; "fastest single review after being asked"; "quick"; true; "dur"; "fastest"),
+    trophy("🐢"; "Zen Turtle"; "slowest median response. Good things take time."; "flash"; false; "dur"; null),
+    trophy("🔨"; "Grand Inquisitor"; "most changes requested"; "changes"; false; "time"; null),
+    trophy("🧸"; "Care Bear"; "highest approval rate (min. 5 reviews)"; "care"; false; "pct"; null),
+    trophy("💬"; "Chatterbox"; "most inline review comments"; "comments"; false; "comment"; null),
+    trophy("🤐"; "Trust Me Bro"; "approvals without a single word"; "silent"; false; "silent approval"; null),
+    trophy("📜"; "Tolstoy"; "longest review message"; "tolstoy"; false; "character"; "longest"),
+    trophy("🍔"; "Diff Eater"; "lines changed in the PRs reviewed"; "lines"; false; "lines"; null),
+    trophy("🦉"; "Night Owl"; "reviews between 8 pm and 6 am"; "night"; false; "review"; null),
+    trophy("🌅"; "Early Bird"; "earliest review of the day"; "earlyv"; true; "clock"; "early"),
+    trophy("🌴"; "Weekend Warrior"; "reviews on Saturday or Sunday. Go outside."; "weekend"; false; "review"; null),
+    trophy("🍻"; "Friday 5 pm Hero"; "reviews on Friday after 5 pm"; "friday"; false; "review"; null),
+    trophy("🧟"; "Necromancer"; "reviewed the oldest PR"; "necro"; false; "days"; "oldest"),
+    trophy("🧲"; "Review Magnet"; "asked to review the most PRs"; "requested"; false; "PR"; null),
+    trophy("👻"; "The Ghost"; "review requests still waiting on open PRs"; "ghost"; false; "PR"; null),
+    trophy("🏭"; "PR Factory"; "most PRs opened. Someone has to feed the reviewers."; "authored"; false; "PR"; null),
+    trophy("🤖"; "Bot Babysitter"; "most bot PRs reviewed (dependency bumps, syncs…)"; "bots"; false; "bot PR"; null)
+  )
+
+# ── who reviews whom
+, (
+    [$P[] | .login as $r | .victims[] | {r: $r, a, n}] | sort_by(-.n) | .[0:5] as $duos
+    | section("💞 BEST FRIENDS"),
+      (if ($duos | length) == 0 then "  Nobody reviewed anybody. Lonely times." | dim
+       else $duos[] | "  \(.r | pad(15) | pink) reviewed \(.n | tostring | lpad(3) | b) PRs of \(.a | pink)" end)
+  )
+
+# ── heatmap, Monday first
+, (
+    section("🔥 WHEN DOES THE TEAM REVIEW?"),
+    ("       " + ([range(24) | if . % 3 == 0 then tostring | pad(2) else "  " end] | join("")) | dim),
+    ([1, 2, 3, 4, 5, 6, 0][] as $d
+     | "  \(DAYS[$d] | dim)  " + ([$heat[$d][] | (. / $maxHeat) as $x
+         | if . == 0 then " ·" | dim
+           elif $x <= 0.25 then "░░" | teal
+           elif $x <= 0.5 then "▒▒" | teal
+           elif $x <= 0.75 then "▓▓" | teal
+           else "██" | teal end] | join(""))),
+    ""
+  )
+, ("  XP = 10 per PR reviewed + 5 per 🔁 + 2 per ✅ + 1 per 💬 + 25 if median ⚡ < 4 h − 3 per 👻" | dim),
+  ("  Response time = from the review request to the next review, nights and weekends included." | dim),
+  ""
+'
+
+if [[ $STATS -gt 0 ]]; then
+    SINCE=$(jq -rn --argjson d "$STATS" 'now - $d * 86400 | todate')
+    TMP=$(mktemp -d)
+    touch "$TMP/prs.jsonl"
+    ids='[]'
+    for login in "${MEMBERS[@]}"; do
+        # reviewed or asked to review (still pending), or PRs of their own
+        for who in reviewed-by review-requested author; do
+            printf '\r🔎 Searching PRs: %-40s' "$login ($who)" >&2
+            found=$(search_all_ids "is:pr archived:false ${SCOPE[*]} updated:>=${SINCE%%T*} $who:$login")
+            ids=$(jq -c --argjson a "$ids" --argjson b "$found" -n '$a + $b | unique')
+        done
+    done
+    total=$(jq length <<<"$ids")
+    for ((i = 0; i < total; i += 25)); do
+        printf '\r📥 Fetching PR details: %d/%d%-30s' "$((i + 1))" "$total" "" >&2
+        jq -n --argjson ids "$(jq -c ".[$i:$i + 25]" <<<"$ids")" --arg query '
+            query($ids: [ID!]!) {
+              nodes(ids: $ids) {
+                ... on PullRequest {
+                  number title url state createdAt additions deletions
+                  author { __typename login }
+                  repository { nameWithOwner }
+                  timelineItems(first: 100, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, PULL_REQUEST_REVIEW]) {
+                    nodes {
+                      __typename
+                      ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } }
+                      ... on ReviewRequestRemovedEvent { createdAt requestedReviewer { ... on User { login } } }
+                      ... on PullRequestReview { submittedAt state bodyText author { login } comments { totalCount } }
+                    }
+                  }
+                }
+              }
+            }' '{query: $query, variables: {ids: $ids}}' \
+        | gh api graphql --input - \
+        | jq -c --arg bots "$BOT_PATTERN" '
+            if .data.nodes == null then
+                "Error: \(.errors[0].message // "unexpected GitHub response")\n" | halt_error(1)
+            else . end
+            | .data.nodes[] | select(. != null)
+            | {
+                ref: "\(.repository.nameWithOwner)#\(.number)", url, title, state, createdAt,
+                author: (.author.login // "ghost"), size: (.additions + .deletions),
+                bot: (.author.__typename == "Bot" or (.author.login // "" | test($bots))),
+                ev: [.timelineItems.nodes[]
+                     | if .__typename == "PullRequestReview" then
+                           {t: "rev", who: .author.login, at: .submittedAt, state, len: (.bodyText | length), comments: .comments.totalCount}
+                       else
+                           {t: (if .__typename == "ReviewRequestedEvent" then "req" else "unreq" end),
+                            who: .requestedReviewer.login, at: .createdAt}
+                       end
+                     | select(.who != null and .at != null)]
+              }' >> "$TMP/prs.jsonl"
+    done
+    printf '\r%-70s\r' "" >&2
+
+    jq -s -r --argjson team "$(printf '%s\n' "${MEMBERS[@]}" | jq -R . | jq -sc .)" \
+        --argjson since "$(jq -n --arg s "$SINCE" '$s | fromdateiso8601')" \
+        --arg sinceDate "$(LC_ALL=C jq -rn --arg s "$SINCE" '$s | fromdateiso8601 | strflocaltime("%b %-d")')" \
+        --arg scope "${SCOPE[*]}" --argjson days "$STATS" --argjson tty "$TTY" \
+        "$ARENA_JQ" "$TMP/prs.jsonl"
+    rm -rf "$TMP"
+    exit 0
+fi
 
 LEGEND="🔁 changes requested  🚀 ready to merge  ✅ approved  👀 waiting for review  ❔ no reviewer  📝 draft
 💬 commented  ⏳ pending  ↻ re-requested after requesting changes  Nd = days without activity"
